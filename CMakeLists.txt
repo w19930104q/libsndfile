@@ -1046,6 +1046,17 @@ if (BUILD_TESTING)
 		)
 	add_test (command_test command_test all)
 
+	### cue_write_test
+
+	add_executable (cue_write_test tests/cue_write_test.c)
+	target_link_libraries (cue_write_test
+		PRIVATE
+			sndfile
+			test_utils
+			$<$<BOOL:${LIBM_REQUIRED}>:m>
+		)
+	add_test (cue_write_test cue_write_test)
+
 	### floating_point_test
 
 	add_executable (floating_point_test

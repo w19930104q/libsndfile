@@ -1804,6 +1804,16 @@ sf_command (sndfile, SFC_GET_CUE, &cues, sizeof (cues)) ;
 
 Set the cue marker information for the file.
 
+The cues must be set before any audio data is written to the file. Calling
+this command again replaces any previously set cues.
+
+For WAV files the cue points are stored in a `cue ` chunk and the cue point
+names in `labl` subchunks of a `LIST`/`adtl` chunk. For AIFF files the cue
+points are stored in a `MARK` chunk, where each marker has a single position
+field (in sample frames) which is taken from `sample_offset` (or from
+`position` if `sample_offset` is zero) and reads back into both, and names
+are stored as Pascal strings which are truncated to 253 characters.
+
 ### Parameters
 
 sndfile

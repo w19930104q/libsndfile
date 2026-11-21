@@ -824,7 +824,7 @@ aiff_read_header (SF_PRIVATE *psf, COMM_CHUNK *comm_fmt)
 							psf_log_printf (psf, "   Mark ID  : %u\n   Position : %u\n", mark_id, position) ;
 
 							cue_points [n].indx = mark_id ;
-							cue_points [n].position = 0 ;
+							cue_points [n].position = position ;
 							cue_points [n].fcc_chunk = MAKE_MARKER ('d', 'a', 't', 'a') ; /* always data */
 							cue_points [n].chunk_start = 0 ;
 							cue_points [n].block_start = 0 ;
@@ -1453,30 +1453,35 @@ aiff_write_header (SF_PRIVATE *psf, int calc_length)
 	if (psf->channel_map && paiff->chanmap_tag)
 		psf_binheader_writef (psf, "Em4444", BHWm (CHAN_MARKER), BHW4 (12), BHW4 (paiff->chanmap_tag), BHW4 (0), BHW4 (0)) ;
 
-	/* Check if there's a INST chunk to write */
-	if (psf->instrument != NULL && psf->cues != NULL)
-	{	/* Huge chunk of code removed here because it had egregious errors that were
-		** not detected by either the compiler or the tests. It was found when updating
-		** the way psf_binheader_writef works.
-		*/
-		}
-	else if (psf->instrument == NULL && psf->cues != NULL)
-	{	/* There are cues but no loops */
-		uint32_t idx ;
+	/* Write the MARK chunk if there are cues. */
+	if (psf->cues != NULL)
+	{	uint32_t idx ;
 		int totalStringLength = 0, stringLength ;
 		SF_CUE_POINT *cue_points = psf_cues_points (psf->cues) ;
 
-		/* Here we count how many bytes will the pascal strings need */
+		/* Here we count how many bytes will the pascal strings need. This must
+		** match the 'p' conversion of psf_binheader_writef exactly : a length
+		** byte plus an odd number of data bytes, the latter capped at 253. */
 		for (idx = 0 ; idx < psf->cues->cue_count ; idx++)
-		{	stringLength = strlen (cue_points [idx].name) + 1 ; /* We'll count the first byte also of every pascal string */
-			totalStringLength += stringLength + (stringLength % 2 == 0 ? 0 : 1) ;
+		{	stringLength = strlen (cue_points [idx].name) ;
+			stringLength = (stringLength & 1) ? stringLength : stringLength + 1 ;
+			stringLength = SF_MIN (stringLength, 253) ;
+			totalStringLength += 1 + stringLength ;
 			} ;
 
 		psf_binheader_writef (psf, "Em42",
 			BHWm (MARK_MARKER), BHW4 (2 + psf->cues->cue_count * (2 + 4) + totalStringLength), BHW2 (psf->cues->cue_count)) ;
 
 		for (idx = 0 ; idx < psf->cues->cue_count ; idx++)
-			psf_binheader_writef (psf, "E24p", BHW2 (cue_points [idx].indx), BHW4 (cue_points [idx].sample_offset), BHWp (cue_points [idx].name)) ;
+		{	uint32_t position = cue_points [idx].sample_offset ;
+
+			/* AIFF markers have a single position field (in sample frames), so
+			** fall back to the generic position field if no sample offset was given. */
+			if (position == 0)
+				position = cue_points [idx].position ;
+
+			psf_binheader_writef (psf, "E24p", BHW2 (cue_points [idx].indx), BHW4 (position), BHWp (cue_points [idx].name)) ;
+			} ;
 		} ;
 
 	if (psf->strings.flags & SF_STR_LOCATE_START)

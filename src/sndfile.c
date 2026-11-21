@@ -1388,9 +1388,14 @@ sf_command	(SNDFILE *sndfile, int command, void *data, int datasize)
 			{	psf->error = SFE_BAD_COMMAND_PARAM ;
 				return SF_FALSE ;
 				} ;
-			if (psf->cues == NULL && (psf->cues = psf_cues_dup (data, datasize)) == NULL)
-			{	psf->error = SFE_MALLOC_FAILED ;
-				return SF_FALSE ;
+			{	SF_CUES *cues = psf_cues_dup (data, datasize) ;
+				if (cues == NULL)
+				{	psf->error = SFE_MALLOC_FAILED ;
+					return SF_FALSE ;
+					} ;
+				/* Replace any previously set cues rather than silently dropping the new ones. */
+				free (psf->cues) ;
+				psf->cues = cues ;
 				} ;
 			return SF_TRUE ;
 

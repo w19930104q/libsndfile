@@ -1212,7 +1212,7 @@ wav_write_header (SF_PRIVATE *psf, int calc_length)
 		wavlike_write_cart_chunk (psf) ;
 
 	if (psf->cues != NULL)
-	{	uint32_t k ;
+	{	uint32_t k, labl_size ;
 		SF_CUE_POINT *cue_points = psf_cues_points (psf->cues) ;
 
 		psf_binheader_writef (psf, "em44", BHWm (cue_MARKER), BHW4 (4 + psf->cues->cue_count * 6 * 4), BHW4 (psf->cues->cue_count)) ;
@@ -1221,6 +1221,36 @@ wav_write_header (SF_PRIVATE *psf, int calc_length)
 			psf_binheader_writef (psf, "e44m444", BHW4 (cue_points [k].indx), BHW4 (cue_points [k].position),
 						BHWm (cue_points [k].fcc_chunk), BHW4 (cue_points [k].chunk_start),
 						BHW4 (cue_points [k].block_start), BHW4 (cue_points [k].sample_offset)) ;
+
+		/* Write the cue point names as 'labl' subchunks of a LIST/adtl chunk.
+		** Cues with an empty name get no 'labl' subchunk and read back with an
+		** empty name. */
+		labl_size = 0 ;
+		for (k = 0 ; k < psf->cues->cue_count ; k++)
+		{	size_t namelen = strlen (cue_points [k].name) ;
+			if (namelen > 0)
+			{	uint32_t sub_size = 4 + (uint32_t) namelen + 1 ;	/* marker id + name + NUL */
+				labl_size += 8 + sub_size + (sub_size & 1) ;	/* subchunk header + data + pad */
+				} ;
+			} ;
+
+		if (labl_size > 0)
+		{	psf_binheader_writef (psf, "em4m", BHWm (LIST_MARKER), BHW4 (4 + labl_size), BHWm (adtl_MARKER)) ;
+
+			for (k = 0 ; k < psf->cues->cue_count ; k++)
+			{	size_t namelen = strlen (cue_points [k].name) ;
+				uint32_t sub_size ;
+
+				if (namelen == 0)
+					continue ;
+
+				sub_size = 4 + (uint32_t) namelen + 1 ;
+				psf_binheader_writef (psf, "em44b", BHWm (labl_MARKER), BHW4 (sub_size),
+							BHW4 (cue_points [k].indx), BHWv (cue_points [k].name), BHWz (namelen + 1)) ;
+				if (sub_size & 1)
+					psf_binheader_writef (psf, "z", BHWz (1)) ;
+				} ;
+			} ;
 		} ;
 
 	if (psf->instrument != NULL)

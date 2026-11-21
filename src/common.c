@@ -743,11 +743,12 @@ psf_binheader_writef (SF_PRIVATE *psf, const char *format, ...)
 
 			case 'p' :
 					/* Write a PASCAL string (as used by AIFF files).
-					*/
+					** The length byte must stay odd so that the length byte plus
+					** the data bytes sum to an even count, hence the 253 cap. */
 					strptr = va_arg (argptr, char *) ;
 					size = strlen (strptr) ;
 					size = (size & 1) ? size : size + 1 ;
-					size = (size > 254) ? 254 : size ;
+					size = (size > 253) ? 253 : size ;
 
 					if (psf->header.indx + 1 + (sf_count_t) size > psf->header.len && psf_bump_header_allocation (psf, 1 + size))
 						break ;

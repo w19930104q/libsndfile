@@ -1036,8 +1036,8 @@ cue_test (const char *filename, int filetype)
 	else
 	{	write_cue = (SF_CUES)
 		{	2,		/* cue_count */
-			{	{	1, 0, data_MARKER, 0, 0, 1, "Cue1" },
-				{	2, 0, data_MARKER, 0, 0, 2, "Cue2" },
+			{	{	1, 1, data_MARKER, 0, 0, 1, "Cue1" },
+				{	2, 2, data_MARKER, 0, 0, 2, "Cue2" },
 			}
 		} ;
 	}
@@ -1101,7 +1101,11 @@ cue_test_var (const char *filename, int filetype, int count)
 	for (i = 0 ; i < count ; i++)
 	{	write_cue->cue_points [i] = (SF_CUE_POINT) { i, 0, data_MARKER, 0, 0, i, "" } ;
 		if (filetype == (SF_FORMAT_AIFF | SF_FORMAT_PCM_24))
+		{	/* AIFF markers have a single position field, which reads back into
+			** both the position and the sample_offset of the cue point. */
+			write_cue->cue_points [i].position = i ;
 			snprintf (write_cue->cue_points [i].name, sizeof (write_cue->cue_points [i].name), "Cue%03d", i) ;
+			} ;
 		} ;
 
 	sfinfo.samplerate	= 11025 ;
