@@ -157,7 +157,10 @@ sds_close	(SF_PRIVATE *psf)
 			} ;
 
 		if (psds->write_count > 0)
-		{	memset (&(psds->write_data [psds->write_count]), 0, (psds->samplesperblock - psds->write_count) * sizeof (int)) ;
+		{	/* Zero the unused tail of the partial sample block so the padding
+			** encodes as silence. Must clear write_samples (the int sample
+			** buffer), not write_data. */
+			memset (&(psds->write_samples [psds->write_count]), 0, (psds->samplesperblock - psds->write_count) * sizeof (int)) ;
 			psds->writer (psf, psds) ;
 			} ;
 
@@ -426,7 +429,11 @@ sds_2byte_read (SF_PRIVATE *psf, SDS_PRIVATE *psds)
 	psds->read_block ++ ;
 	psds->read_count = 0 ;
 
-	if (psds->read_block * psds->samplesperblock > psds->frames)
+	/* read_block has already been incremented, so the block about to be
+	** read is block index (read_block - 1). Only that block index is
+	** entirely beyond the sample count when (read_block - 1) * spb >= frames.
+	** The final partial block still holds valid samples and must be read. */
+	if ((psds->read_block - 1) * psds->samplesperblock >= psds->frames)
 	{	memset (psds->read_samples, 0, psds->samplesperblock * sizeof (int)) ;
 		return 1 ;
 		} ;
@@ -470,7 +477,11 @@ sds_3byte_read (SF_PRIVATE *psf, SDS_PRIVATE *psds)
 	psds->read_block ++ ;
 	psds->read_count = 0 ;
 
-	if (psds->read_block * psds->samplesperblock > psds->frames)
+	/* read_block has already been incremented, so the block about to be
+	** read is block index (read_block - 1). Only that block index is
+	** entirely beyond the sample count when (read_block - 1) * spb >= frames.
+	** The final partial block still holds valid samples and must be read. */
+	if ((psds->read_block - 1) * psds->samplesperblock >= psds->frames)
 	{	memset (psds->read_samples, 0, psds->samplesperblock * sizeof (int)) ;
 		return 1 ;
 		} ;
@@ -514,7 +525,11 @@ sds_4byte_read (SF_PRIVATE *psf, SDS_PRIVATE *psds)
 	psds->read_block ++ ;
 	psds->read_count = 0 ;
 
-	if (psds->read_block * psds->samplesperblock > psds->frames)
+	/* read_block has already been incremented, so the block about to be
+	** read is block index (read_block - 1). Only that block index is
+	** entirely beyond the sample count when (read_block - 1) * spb >= frames.
+	** The final partial block still holds valid samples and must be read. */
+	if ((psds->read_block - 1) * psds->samplesperblock >= psds->frames)
 	{	memset (psds->read_samples, 0, psds->samplesperblock * sizeof (int)) ;
 		return 1 ;
 		} ;
@@ -543,7 +558,10 @@ sds_4byte_read (SF_PRIVATE *psf, SDS_PRIVATE *psds)
 	ucptr = psds->read_data + 5 ;
 	for (k = 0 ; k < 120 ; k += 4)
 	{	sample = (((uint32_t) ucptr [k]) << 25) | (ucptr [k + 1] << 18) | (ucptr [k + 2] << 11) | (ucptr [k + 3] << 4) ;
-		psds->read_samples [k / 4] = (int) (sample - 0x80000000) ;
+		/* Reconstruct at the centre of the transmitted code's bin by adding
+		** half a transport step (2^3). Without this the truncation error is
+		** up to 2^4 - 1, which exceeds half the 28-bit quantization step. */
+		psds->read_samples [k / 4] = (int) (sample - 0x80000000 + 0x8) ;
 		} ;
 
 	return 1 ;
@@ -659,7 +677,9 @@ sds_read (SF_PRIVATE *psf, SDS_PRIVATE *psds, int *ptr, int len)
 {	int	count, total = 0 ;
 
 	while (total < len)
-	{	if (psds->read_block * psds->samplesperblock >= psds->frames)
+	{	/* Current read position is (read_block - 1) * spb + read_count ;
+		** the final partial block holds valid samples up to psds->frames. */
+		if ((psds->read_block - 1) * psds->samplesperblock + psds->read_count >= psds->frames)
 		{	memset (&(ptr [total]), 0, (len - total) * sizeof (int)) ;
 			return total ;
 			} ;
@@ -776,7 +796,7 @@ sds_2byte_write (SF_PRIVATE *psf, SDS_PRIVATE *psds)
 	psds->write_data [1] = 0x7E ;
 	psds->write_data [2] = 0 ;							/* Channel number */
 	psds->write_data [3] = 2 ;
-	psds->write_data [4] = psds->write_block & 0x7F ;	/* Packet number */
+	psds->write_data [4] = psds->write_block % 127 ;	/* Packet number : 0..126 then wraps, 127 is reserved */
 
 	ucptr = psds->write_data + 5 ;
 	for (k = 0 ; k < 120 ; k += 2)
@@ -817,7 +837,7 @@ sds_3byte_write (SF_PRIVATE *psf, SDS_PRIVATE *psds)
 	psds->write_data [1] = 0x7E ;
 	psds->write_data [2] = 0 ;							/* Channel number */
 	psds->write_data [3] = 2 ;
-	psds->write_data [4] = psds->write_block & 0x7F ;	/* Packet number */
+	psds->write_data [4] = psds->write_block % 127 ;	/* Packet number : 0..126 then wraps, 127 is reserved */
 
 	ucptr = psds->write_data + 5 ;
 	for (k = 0 ; k < 120 ; k += 3)
@@ -859,7 +879,7 @@ sds_4byte_write (SF_PRIVATE *psf, SDS_PRIVATE *psds)
 	psds->write_data [1] = 0x7E ;
 	psds->write_data [2] = 0 ;							/* Channel number */
 	psds->write_data [3] = 2 ;
-	psds->write_data [4] = psds->write_block & 0x7F ;	/* Packet number */
+	psds->write_data [4] = psds->write_block % 127 ;	/* Packet number : 0..126 then wraps, 127 is reserved */
 
 	ucptr = psds->write_data + 5 ;
 	for (k = 0 ; k < 120 ; k += 4)
