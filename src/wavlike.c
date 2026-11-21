@@ -519,6 +519,96 @@ wavlike_gen_channel_mask (const int *chan_map, int channels)
 	return mask ;
 } /* wavlike_gen_channel_mask */
 
+unsigned
+wavlike_default_channel_mask (int channels)
+{	/*
+	** Ok some liberty is taken here to use the most commonly used channel masks
+	** instead of "no mapping".
+	*/
+	switch (channels)
+	{	case 1 :	/* center channel mono */
+			return 0x4 ;
+
+		case 2 :	/* front left and right */
+			return 0x1 | 0x2 ;
+
+		case 4 :	/* Quad */
+			return 0x1 | 0x2 | 0x10 | 0x20 ;
+
+		case 6 :	/* 5.1 */
+			return 0x1 | 0x2 | 0x4 | 0x8 | 0x10 | 0x20 ;
+
+		case 8 :	/* 7.1 */
+			return 0x1 | 0x2 | 0x4 | 0x8 | 0x10 | 0x20 | 0x40 | 0x80 ;
+
+		default :	/* 0 when in doubt, ie NO mapping */
+			break ;
+		} ;
+
+	return 0 ;
+} /* wavlike_default_channel_mask */
+
+int
+wavlike_channel_mask_to_map (int *chan_map, int channels, unsigned mask)
+{	int bit, k ;
+
+	if (chan_map == NULL)
+		return 0 ;
+
+	for (bit = k = 0 ; bit < ARRAY_LEN (channel_mask_bits) && k < channels ; bit++)
+		if (mask & (1 << bit))
+			chan_map [k++] = channel_mask_bits [bit].id ;
+
+	return k ;
+} /* wavlike_channel_mask_to_map */
+
+void
+wavlike_set_default_channel_map (SF_PRIVATE *psf)
+{	unsigned mask ;
+
+	if (psf->channel_map != NULL)
+		return ;
+
+	mask = wavlike_default_channel_mask (psf->sf.channels) ;
+	if (mask == 0)
+		return ;
+
+	if ((psf->channel_map = calloc (psf->sf.channels, sizeof (psf->channel_map [0]))) == NULL)
+		return ;
+
+	wavlike_channel_mask_to_map (psf->channel_map, psf->sf.channels, mask) ;
+} /* wavlike_set_default_channel_map */
+
+int
+wavlike_write_extensible_guid (SF_PRIVATE *psf, int subformat)
+{	switch (subformat)
+	{	case SF_FORMAT_PCM_U8 :
+		case SF_FORMAT_PCM_16 :
+		case SF_FORMAT_PCM_24 :
+		case SF_FORMAT_PCM_32 :
+			wavlike_write_guid (psf, &MSGUID_SUBTYPE_PCM) ;
+			return SF_TRUE ;
+
+		case SF_FORMAT_FLOAT :
+		case SF_FORMAT_DOUBLE :
+			wavlike_write_guid (psf, &MSGUID_SUBTYPE_IEEE_FLOAT) ;
+			return SF_TRUE ;
+
+		case SF_FORMAT_ULAW :
+			wavlike_write_guid (psf, &MSGUID_SUBTYPE_MULAW) ;
+			return SF_TRUE ;
+
+		case SF_FORMAT_ALAW :
+			wavlike_write_guid (psf, &MSGUID_SUBTYPE_ALAW) ;
+			return SF_TRUE ;
+
+		default :
+			break ;
+		} ;
+
+	return SF_FALSE ;
+} /* wavlike_write_extensible_guid */
+
 void
 wavlike_analyze (SF_PRIVATE *psf)
 {	unsigned char buffer [4096] ;

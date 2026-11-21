@@ -115,6 +115,8 @@ enum
 static int	w64_read_header	(SF_PRIVATE *psf, int *blockalign, int *framesperblock) ;
 static int	w64_write_header (SF_PRIVATE *psf, int calc_length) ;
 static int	w64_close (SF_PRIVATE *psf) ;
+static int	w64_command (SF_PRIVATE *psf, int command, void *data, int datasize) ;
+static int	w64_format_tag (int subformat) ;
 
 /*------------------------------------------------------------------------------
 ** Public function.
@@ -168,6 +170,7 @@ w64_open	(SF_PRIVATE *psf)
 		} ;
 
 	psf->container_close = w64_close ;
+	psf->command = w64_command ;
 
 	switch (subformat)
 	{	case SF_FORMAT_PCM_U8 :
@@ -400,9 +403,13 @@ w64_read_header	(SF_PRIVATE *psf, int *blockalign, int *framesperblock)
 
 	switch (format)
 	{	case WAVE_FORMAT_PCM :
-		case WAVE_FORMAT_EXTENSIBLE :
-					/* extensible might be FLOAT, MULAW, etc as well! */
 					psf->sf.format = SF_FORMAT_W64 | u_bitwidth_to_subformat (psf->bytewidth * 8) ;
+					break ;
+
+		case WAVE_FORMAT_EXTENSIBLE :
+					/* wavlike_read_fmt_chunk () has already determined the codec
+					** from the subformat GUID. */
+					psf->sf.format = SF_FORMAT_W64 | SF_CODEC (psf->sf.format) ;
 					break ;
 
 		case WAVE_FORMAT_MULAW :
@@ -437,14 +444,35 @@ w64_read_header	(SF_PRIVATE *psf, int *blockalign, int *framesperblock)
 		default : return SFE_UNIMPLEMENTED ;
 		} ;
 
+	/*
+	**	If the fmt chunk carried no channel layout of its own, fall back to the
+	**	same default layout that WAVEX files get, so that
+	**	SFC_GET_CHANNEL_MAP_INFO behaves consistently across containers.
+	*/
+	if (psf->channel_map == NULL)
+		switch (format)
+		{	case WAVE_FORMAT_PCM :
+			case WAVE_FORMAT_IEEE_FLOAT :
+			case WAVE_FORMAT_MULAW :
+			case WAVE_FORMAT_ALAW :
+				wavlike_set_default_channel_map (psf) ;
+				break ;
+			default :
+				break ;
+			} ;
+
 	return 0 ;
 } /* w64_read_header */
 
 static int
 w64_write_header (SF_PRIVATE *psf, int calc_length)
-{	sf_count_t 	fmt_size, current ;
+{	WAVLIKE_PRIVATE *wpriv ;
+	sf_count_t 	fmt_size, current ;
 	size_t		fmt_pad = 0 ;
 	int 		subformat, add_fact_chunk = SF_FALSE ;
+
+	if ((wpriv = psf->container_data) == NULL)
+		return SFE_INTERNAL ;
 
 	current = psf_ftell (psf) ;
 
@@ -469,67 +497,80 @@ w64_write_header (SF_PRIVATE *psf, int calc_length)
 
 	subformat = SF_CODEC (psf->sf.format) ;
 
+	/*
+	**	Figure out whether the 'fmt ' chunk is a plain WAVEFORMATEX or a
+	**	WAVEFORMATEXTENSIBLE. The choice must not change between the initial
+	**	write and the rewrite at close time, because the header is rewritten
+	**	in place : a growing 'fmt ' chunk would overwrite audio data.
+	**	New files always get a WAVEFORMATEXTENSIBLE 'fmt ' chunk (like WAVEX
+	**	files) so that a channel map set after opening the file can still be
+	**	persisted. Files opened read/write keep the layout they were read
+	**	with.
+	*/
+	if (psf->file.mode == SFM_RDWR && wpriv->wav_fmt.format != 0)
+		wpriv->w64_fmt_extensible = (wpriv->wav_fmt.format == WAVE_FORMAT_EXTENSIBLE) ;
+	else
+		wpriv->w64_fmt_extensible = SF_TRUE ;
+
 	switch (subformat)
 	{	case	SF_FORMAT_PCM_U8 :
 		case	SF_FORMAT_PCM_16 :
 		case	SF_FORMAT_PCM_24 :
 		case	SF_FORMAT_PCM_32 :
+		case	SF_FORMAT_FLOAT :
+		case	SF_FORMAT_DOUBLE :
+		case	SF_FORMAT_ULAW :
+		case	SF_FORMAT_ALAW :
 					fmt_size = 24 + 2 + 2 + 4 + 4 + 2 + 2 ;
+					if (wpriv->w64_fmt_extensible)
+						/* cbSize, wValidBitsPerSample, dwChannelMask and the subformat GUID. */
+						fmt_size += 2 + 2 + 4 + 16 ;
 					fmt_pad = (size_t) ((fmt_size & 0x7) ? 8 - (fmt_size & 0x7) : 0) ;
 					fmt_size += fmt_pad ;
 
 					/* fmt : format, channels, samplerate */
-					psf_binheader_writef (psf, "e8224", BHW8 (fmt_size), BHW2 (WAVE_FORMAT_PCM), BHW2 (psf->sf.channels), BHW4 (psf->sf.samplerate)) ;
-					/*  fmt : bytespersec */
-					psf_binheader_writef (psf, "e4", BHW4 ((sf_count_t) psf->sf.samplerate * psf->bytewidth * psf->sf.channels)) ;
-					/*  fmt : blockalign, bitwidth */
-					psf_binheader_writef (psf, "e22", BHW2 (psf->bytewidth * psf->sf.channels), BHW2 (psf->bytewidth * 8)) ;
-					break ;
-
-		case SF_FORMAT_FLOAT :
-		case SF_FORMAT_DOUBLE :
-					fmt_size = 24 + 2 + 2 + 4 + 4 + 2 + 2 ;
-					fmt_pad = (size_t) ((fmt_size & 0x7) ? 8 - (fmt_size & 0x7) : 0) ;
-					fmt_size += fmt_pad ;
-
-					/* fmt : format, channels, samplerate */
-					psf_binheader_writef (psf, "e8224", BHW8 (fmt_size), BHW2 (WAVE_FORMAT_IEEE_FLOAT), BHW2 (psf->sf.channels), BHW4 (psf->sf.samplerate)) ;
+					psf_binheader_writef (psf, "e8224", BHW8 (fmt_size),
+							BHW2 (wpriv->w64_fmt_extensible ? WAVE_FORMAT_EXTENSIBLE : w64_format_tag (subformat)),
+							BHW2 (psf->sf.channels), BHW4 (psf->sf.samplerate)) ;
 					/*  fmt : bytespersec */
 					psf_binheader_writef (psf, "e4", BHW4 ((sf_count_t) psf->sf.samplerate * psf->bytewidth * psf->sf.channels)) ;
 					/*  fmt : blockalign, bitwidth */
 					psf_binheader_writef (psf, "e22", BHW2 (psf->bytewidth * psf->sf.channels), BHW2 (psf->bytewidth * 8)) ;
 
-					add_fact_chunk = SF_TRUE ;
-					break ;
+					if (wpriv->w64_fmt_extensible)
+					{	unsigned channelmask ;
 
-		case SF_FORMAT_ULAW :
-					fmt_size = 24 + 2 + 2 + 4 + 4 + 2 + 2 ;
-					fmt_pad = (size_t) ((fmt_size & 0x7) ? 8 - (fmt_size & 0x7) : 0) ;
-					fmt_size += fmt_pad ;
+						/* cbSize 22 is sizeof (WAVEFORMATEXTENSIBLE) - sizeof (WAVEFORMATEX) */
+						psf_binheader_writef (psf, "e2", BHW2 (22)) ;
+						/* wValidBitsPerSample, for our use same as bitwidth as we use it fully */
+						psf_binheader_writef (psf, "e2", BHW2 (psf->bytewidth * 8)) ;
 
-					/* fmt : format, channels, samplerate */
-					psf_binheader_writef (psf, "e8224", BHW8 (fmt_size), BHW2 (WAVE_FORMAT_MULAW), BHW2 (psf->sf.channels), BHW4 (psf->sf.samplerate)) ;
-					/*  fmt : bytespersec */
-					psf_binheader_writef (psf, "e4", BHW4 ((sf_count_t) psf->sf.samplerate * psf->bytewidth * psf->sf.channels)) ;
-					/*  fmt : blockalign, bitwidth */
-					psf_binheader_writef (psf, "e22", BHW2 (psf->bytewidth * psf->sf.channels), BHW2 (8)) ;
+						/* dwChannelMask : an explicitly set channel map wins, then the
+						** mask the file was read with, then a default based on the
+						** channel count (same defaults as WAVEX files).
+						*/
+						if (wpriv->wavex_channelmask != 0)
+							channelmask = wpriv->wavex_channelmask ;
+						else if (psf->file.mode == SFM_RDWR && wpriv->wav_fmt.format == WAVE_FORMAT_EXTENSIBLE)
+							channelmask = wpriv->wav_fmt.ext.channelmask ;
+						else
+							channelmask = wavlike_default_channel_mask (psf->sf.channels) ;
+						psf_binheader_writef (psf, "e4", BHW4 (channelmask)) ;
 
-					add_fact_chunk = SF_TRUE ;
-					break ;
+						/* SubFormat GUID */
+						wavlike_write_extensible_guid (psf, subformat) ;
+						} ;
 
-		case SF_FORMAT_ALAW :
-					fmt_size = 24 + 2 + 2 + 4 + 4 + 2 + 2 ;
-					fmt_pad = (size_t) ((fmt_size & 0x7) ? 8 - (fmt_size & 0x7) : 0) ;
-					fmt_size += fmt_pad ;
-
-					/* fmt : format, channels, samplerate */
-					psf_binheader_writef (psf, "e8224", BHW8 (fmt_size), BHW2 (WAVE_FORMAT_ALAW), BHW2 (psf->sf.channels), BHW4 (psf->sf.samplerate)) ;
-					/*  fmt : bytespersec */
-					psf_binheader_writef (psf, "e4", BHW4 ((sf_count_t) psf->sf.samplerate * psf->bytewidth * psf->sf.channels)) ;
-					/*  fmt : blockalign, bitwidth */
-					psf_binheader_writef (psf, "e22", BHW2 (psf->bytewidth * psf->sf.channels), BHW2 (8)) ;
-
-					add_fact_chunk = SF_TRUE ;
+					switch (subformat)
+					{	case SF_FORMAT_PCM_U8 :
+						case SF_FORMAT_PCM_16 :
+						case SF_FORMAT_PCM_24 :
+						case SF_FORMAT_PCM_32 :
+							break ;
+						default :
+							add_fact_chunk = SF_TRUE ;
+							break ;
+						} ;
 					break ;
 
 		/* Lite remove start */
@@ -642,4 +683,48 @@ w64_close (SF_PRIVATE *psf)
 
 	return 0 ;
 } /* w64_close */
+
+static int
+w64_command (SF_PRIVATE *psf, int command, void * UNUSED (data), int UNUSED (datasize))
+{	WAVLIKE_PRIVATE	*wpriv ;
+
+	if ((wpriv = psf->container_data) == NULL)
+		return SFE_INTERNAL ;
+
+	switch (command)
+	{	case SFC_SET_CHANNEL_MAP_INFO :
+			/* A plain 'fmt ' chunk of a file opened read/write cannot be
+			** upgraded to WAVEFORMATEXTENSIBLE in place. */
+			if (psf->file.mode == SFM_RDWR && wpriv->wav_fmt.format != 0
+					&& wpriv->wav_fmt.format != WAVE_FORMAT_EXTENSIBLE)
+				return SF_FALSE ;
+			wpriv->wavex_channelmask = wavlike_gen_channel_mask (psf->channel_map, psf->sf.channels) ;
+			return (wpriv->wavex_channelmask != 0) ;
+
+		default :
+			break ;
+	} ;
+
+	return 0 ;
+} /* w64_command */
+
+static int
+w64_format_tag (int subformat)
+{	switch (subformat)
+	{	case SF_FORMAT_FLOAT :
+		case SF_FORMAT_DOUBLE :
+			return WAVE_FORMAT_IEEE_FLOAT ;
+
+		case SF_FORMAT_ULAW :
+			return WAVE_FORMAT_MULAW ;
+
+		case SF_FORMAT_ALAW :
+			return WAVE_FORMAT_ALAW ;
+
+		default :
+			break ;
+		} ;
+
+	return WAVE_FORMAT_PCM ;
+} /* w64_format_tag */
 

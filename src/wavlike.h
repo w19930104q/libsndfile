@@ -320,6 +320,9 @@ typedef struct
 	int	wavex_ambisonic ;
 	unsigned wavex_channelmask ;
 
+	/* Set to true when the W64 'fmt ' chunk is written as WAVEFORMATEXTENSIBLE. */
+	int w64_fmt_extensible ;
+
 	/* Set to true when 'fmt ' chunk is ambiguous.*/
 	int fmt_is_broken ;
 	WAV_FMT wav_fmt ;
@@ -355,6 +358,10 @@ int		wavlike_read_fmt_chunk (SF_PRIVATE *psf, int fmtsize) ;
 void	wavlike_write_guid (SF_PRIVATE *psf, const EXT_SUBFORMAT * subformat) ;
 void	wavlike_analyze (SF_PRIVATE *psf) ;
 int		wavlike_gen_channel_mask (const int *chan_map, int channels) ;
+unsigned wavlike_default_channel_mask (int channels) ;
+int		wavlike_channel_mask_to_map (int *chan_map, int channels, unsigned mask) ;
+void	wavlike_set_default_channel_map (SF_PRIVATE *psf) ;
+int		wavlike_write_extensible_guid (SF_PRIVATE *psf, int subformat) ;
 
 int		wavlike_read_bext_chunk (SF_PRIVATE *psf, uint32_t chunksize) ;
 int		wavlike_write_bext_chunk (SF_PRIVATE *psf) ;

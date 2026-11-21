@@ -577,31 +577,7 @@ rf64_write_fmt_chunk (SF_PRIVATE *psf)
 				** instead of "no mapping". If you really want to use "no mapping" for 8 channels and less
 				** please don't use wavex. (otherwise we'll have to create a new SF_COMMAND)
 				*/
-				switch (psf->sf.channels)
-				{	case 1 :	/* center channel mono */
-						psf_binheader_writef (psf, "4", BHW4 (0x4)) ;
-						break ;
-
-					case 2 :	/* front left and right */
-						psf_binheader_writef (psf, "4", BHW4 (0x1 | 0x2)) ;
-						break ;
-
-					case 4 :	/* Quad */
-						psf_binheader_writef (psf, "4", BHW4 (0x1 | 0x2 | 0x10 | 0x20)) ;
-						break ;
-
-					case 6 :	/* 5.1 */
-						psf_binheader_writef (psf, "4", BHW4 (0x1 | 0x2 | 0x4 | 0x8 | 0x10 | 0x20)) ;
-						break ;
-
-					case 8 :	/* 7.1 */
-						psf_binheader_writef (psf, "4", BHW4 (0x1 | 0x2 | 0x4 | 0x8 | 0x10 | 0x20 | 0x40 | 0x80)) ;
-						break ;
-
-					default :	/* 0 when in doubt , use direct out, ie NO mapping*/
-						psf_binheader_writef (psf, "4", BHW4 (0x0)) ;
-						break ;
-					} ;
+				psf_binheader_writef (psf, "4", BHW4 (wavlike_default_channel_mask (psf->sf.channels))) ;
 				} ;
 			break ;
 

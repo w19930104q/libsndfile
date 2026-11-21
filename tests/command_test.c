@@ -52,6 +52,7 @@ static	void	instrument_test			(const char *filename, int filetype) ;
 static	void	cue_test				(const char *filename, int filetype) ;
 static	void	cue_test_var			(const char *filename, int filetype, int count) ;
 static	void	channel_map_test		(const char *filename, int filetype) ;
+static	void	channel_map_51_test		(const char *filename, int filetype) ;
 static	void	second_fmt_chunk_test	(const char *filename, const unsigned char *data, unsigned int datalen) ;
 static	void	current_sf_info_test	(const char *filename) ;
 static	void	raw_needs_endswap_test	(const char *filename, int filetype) ;
@@ -240,8 +241,13 @@ main (int argc, char *argv [])
 	if (do_all || strcmp (argv [1], "chanmap") == 0)
 	{	channel_map_test ("chanmap.wavex", SF_FORMAT_WAVEX | SF_FORMAT_PCM_16) ;
 		channel_map_test ("chanmap.rf64", SF_FORMAT_RF64 | SF_FORMAT_PCM_16) ;
+		channel_map_test ("chanmap.w64" , SF_FORMAT_W64 | SF_FORMAT_PCM_16) ;
 		channel_map_test ("chanmap.aifc" , SF_FORMAT_AIFF | SF_FORMAT_PCM_16) ;
 		channel_map_test ("chanmap.caf" , SF_FORMAT_CAF | SF_FORMAT_PCM_16) ;
+
+		channel_map_51_test ("chanmap51.wavex", SF_FORMAT_WAVEX | SF_FORMAT_PCM_16) ;
+		channel_map_51_test ("chanmap51.w64" , SF_FORMAT_W64 | SF_FORMAT_PCM_16) ;
+		channel_map_51_test ("chanmap51.caf" , SF_FORMAT_CAF | SF_FORMAT_PCM_16) ;
 
 		second_fmt_chunk_test ("second_fmt.rf64", rf64_two_fmt, sizeof (rf64_two_fmt)) ;
 		second_fmt_chunk_test ("second_fmt.w64", w64_two_fmt, sizeof (w64_two_fmt)) ;
@@ -1823,9 +1829,10 @@ channel_map_test (const char *filename, int filetype)
 	sfinfo.channels		= ARRAY_LEN (channel_map_read) ;
 
 	switch (filetype & SF_FORMAT_TYPEMASK)
-	{	/* WAVEX and RF64 have a default channel map, even if you don't specify one. */
+	{	/* WAVEX, RF64 and W64 have a default channel map, even if you don't specify one. */
 		case SF_FORMAT_WAVEX :
 		case SF_FORMAT_RF64 :
+		case SF_FORMAT_W64 :
 			/* Write file without channel map. */
 			file = test_open_file_or_die (filename, SFM_WRITE, &sfinfo, SF_TRUE, __LINE__) ;
 			test_write_double_or_die (file, 0, double_data, BUFFER_LEN, __LINE__) ;
@@ -1871,6 +1878,77 @@ channel_map_test (const char *filename, int filetype)
 	unlink (filename) ;
 	puts ("ok") ;
 } /* channel_map_test */
+
+static	void
+channel_map_51_test (const char *filename, int filetype)
+{	/* Set a non-default 5.1 layout (5.1 side), write the file and check
+	** that the layout read back matches channel by channel. Also check
+	** that a file written without an explicit layout reports the default
+	** 5.1 layout.
+	*/
+	SNDFILE	*file ;
+	SF_INFO	sfinfo ;
+	int channel_map_read [6], channel_map_write [6] =
+	{	SF_CHANNEL_MAP_LEFT, SF_CHANNEL_MAP_RIGHT, SF_CHANNEL_MAP_CENTER,
+		SF_CHANNEL_MAP_LFE, SF_CHANNEL_MAP_SIDE_LEFT, SF_CHANNEL_MAP_SIDE_RIGHT
+		} ;
+	static const int channel_map_default [6] =
+	{	SF_CHANNEL_MAP_LEFT, SF_CHANNEL_MAP_RIGHT, SF_CHANNEL_MAP_CENTER,
+		SF_CHANNEL_MAP_LFE, SF_CHANNEL_MAP_REAR_LEFT, SF_CHANNEL_MAP_REAR_RIGHT
+		} ;
+
+	print_test_name ("channel_map_51_test", filename) ;
+
+	memset (&sfinfo, 0, sizeof (sfinfo)) ;
+	sfinfo.samplerate	= 48000 ;
+	sfinfo.format		= filetype ;
+	sfinfo.channels		= ARRAY_LEN (channel_map_read) ;
+
+	/* Write file without a channel map. */
+	file = test_open_file_or_die (filename, SFM_WRITE, &sfinfo, SF_TRUE, __LINE__) ;
+	test_write_double_or_die (file, 0, double_data, BUFFER_LEN - BUFFER_LEN % 6, __LINE__) ;
+	sf_close (file) ;
+
+	/* Read file making sure the default channel map exists. */
+	file = test_open_file_or_die (filename, SFM_READ, &sfinfo, SF_TRUE, __LINE__) ;
+	exit_if_true (
+		sf_command (file, SFC_GET_CHANNEL_MAP_INFO, channel_map_read, sizeof (channel_map_read)) != SF_TRUE,
+		"\n\nLine %d : sf_command (SFC_GET_CHANNEL_MAP_INFO) should not have failed.\n\n", __LINE__
+		) ;
+	check_log_buffer_or_die (file, __LINE__) ;
+	sf_close (file) ;
+
+	exit_if_true (
+		memcmp (channel_map_read, channel_map_default, sizeof (channel_map_read)) != 0,
+		"\n\nLine %d : Default channel map does not match expected 5.1 layout.\n\n", __LINE__
+		) ;
+
+	/* Write file with a non-default 5.1 channel map. */
+	file = test_open_file_or_die (filename, SFM_WRITE, &sfinfo, SF_TRUE, __LINE__) ;
+	exit_if_true (
+		sf_command (file, SFC_SET_CHANNEL_MAP_INFO, channel_map_write, sizeof (channel_map_write)) == SF_FALSE,
+		"\n\nLine %d : sf_command (SFC_SET_CHANNEL_MAP_INFO) failed.\n\n", __LINE__
+		) ;
+	test_write_double_or_die (file, 0, double_data, BUFFER_LEN - BUFFER_LEN % 6, __LINE__) ;
+	sf_close (file) ;
+
+	/* Read file and check the channel map comes back unchanged. */
+	file = test_open_file_or_die (filename, SFM_READ, &sfinfo, SF_TRUE, __LINE__) ;
+	exit_if_true (
+		sf_command (file, SFC_GET_CHANNEL_MAP_INFO, channel_map_read, sizeof (channel_map_read)) != SF_TRUE,
+		"\n\nLine %d : sf_command (SFC_GET_CHANNEL_MAP_INFO) failed.\n\n", __LINE__
+		) ;
+	check_log_buffer_or_die (file, __LINE__) ;
+	sf_close (file) ;
+
+	exit_if_true (
+		memcmp (channel_map_read, channel_map_write, sizeof (channel_map_read)) != 0,
+		"\n\nLine %d : Channel map read does not match channel map written.\n\n", __LINE__
+		) ;
+
+	unlink (filename) ;
+	puts ("ok") ;
+} /* channel_map_51_test */
 
 static	void
 second_fmt_chunk_test (const char *filename, const unsigned char *data, unsigned int datalen)

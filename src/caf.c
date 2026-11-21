@@ -29,6 +29,7 @@
 #include	"sfendian.h"
 #include	"common.h"
 #include	"chanmap.h"
+#include	"wavlike.h"
 
 /*------------------------------------------------------------------------------
 ** Macros to handle big/little endian issues.
@@ -39,6 +40,9 @@
 #define alaw_MARKER		MAKE_MARKER ('a', 'l', 'a', 'w')
 #define caff_MARKER		MAKE_MARKER ('c', 'a', 'f', 'f')
 #define chan_MARKER		MAKE_MARKER ('c', 'h', 'a', 'n')
+
+/* 'chan' chunk layout tag meaning that the channel bitmap field is used. */
+#define CAF_CHANNEL_LAYOUT_USE_BITMAP	((1 << 16) | 0)
 #define data_MARKER		MAKE_MARKER ('d', 'a', 't', 'a')
 #define desc_MARKER		MAKE_MARKER ('d', 'e', 's', 'c')
 #define edct_MARKER		MAKE_MARKER ('e', 'd', 'c', 't')
@@ -82,6 +86,8 @@ typedef struct
 
 typedef struct
 {	int			chanmap_tag ;
+	unsigned	chanmap_bitmap ;
+	int			chan_chunk_seen ;
 
 	ALAC_DECODER_INFO	alac ;
 } CAF_PRIVATE ;
@@ -122,6 +128,14 @@ caf_open (SF_PRIVATE *psf)
 	if (psf->file.mode == SFM_READ || (psf->file.mode == SFM_RDWR && psf->filelength > 0))
 	{	if ((error = caf_read_header (psf)))
 			return error ;
+
+		/*
+		**	If the file has no 'chan' chunk, fall back to the same default
+		**	layout as the other containers so that SFC_GET_CHANNEL_MAP_INFO
+		**	behaves consistently.
+		*/
+		if (psf->channel_map == NULL && ! pcaf->chan_chunk_seen)
+			wavlike_set_default_channel_map (psf) ;
 
 		psf->next_chunk_iterator = caf_next_chunk_iterator ;
 		psf->get_chunk_size = caf_get_chunk_size ;
@@ -235,7 +249,13 @@ caf_command (SF_PRIVATE * psf, int command, void * UNUSED (data), int UNUSED (da
 	switch (command)
 	{	case SFC_SET_CHANNEL_MAP_INFO :
 			pcaf->chanmap_tag = aiff_caf_find_channel_layout_tag (psf->channel_map, psf->sf.channels) ;
-			return (pcaf->chanmap_tag != 0) ;
+			if (pcaf->chanmap_tag != 0)
+			{	pcaf->chanmap_bitmap = 0 ;
+				return SF_TRUE ;
+				} ;
+			/* No known layout tag : fall back to the CAF channel bitmap. */
+			pcaf->chanmap_bitmap = wavlike_gen_channel_mask (psf->channel_map, psf->sf.channels) ;
+			return (pcaf->chanmap_bitmap != 0) ;
 
 		default :
 			break ;
@@ -735,6 +755,8 @@ caf_write_header (SF_PRIVATE *psf, int calc_length)
 
 	if (psf->channel_map && pcaf->chanmap_tag)
 		psf_binheader_writef (psf, "Em8444", BHWm (chan_MARKER), BHW8 ((sf_count_t) 12), BHW4 (pcaf->chanmap_tag), BHW4 (0), BHW4 (0)) ;
+	else if (psf->channel_map && pcaf->chanmap_bitmap)
+		psf_binheader_writef (psf, "Em8444", BHWm (chan_MARKER), BHW8 ((sf_count_t) 12), BHW4 (CAF_CHANNEL_LAYOUT_USE_BITMAP), BHW4 (pcaf->chanmap_bitmap), BHW4 (0)) ;
 
 	/* Write custom headers. */
 	for (uk = 0 ; uk < psf->wchunks.used ; uk++)
@@ -795,9 +817,15 @@ caf_write_tailer (SF_PRIVATE *psf)
 
 static int
 caf_read_chanmap (SF_PRIVATE * psf, sf_count_t chunk_size)
-{	const AIFF_CAF_CHANNEL_MAP * map_info ;
+{	CAF_PRIVATE *pcaf ;
+	const AIFF_CAF_CHANNEL_MAP * map_info ;
 	unsigned channel_bitmap, channel_decriptions, bytesread ;
 	int layout_tag ;
+
+	if ((pcaf = psf->container_data) == NULL)
+		return SFE_INTERNAL ;
+
+	pcaf->chan_chunk_seen = SF_TRUE ;
 
 	bytesread = psf_binheader_readf (psf, "E444", &layout_tag, &channel_bitmap, &channel_decriptions) ;
 
@@ -810,7 +838,17 @@ caf_read_chanmap (SF_PRIVATE * psf, sf_count_t chunk_size)
 	if (bytesread < chunk_size)
 		psf_binheader_readf (psf, "j", chunk_size - bytesread) ;
 
-	if (map_info && map_info->channel_map != NULL)
+	if (layout_tag == CAF_CHANNEL_LAYOUT_USE_BITMAP && channel_bitmap != 0)
+	{	/* The channel bitmap uses the same speaker position bits as the
+		** WAVEFORMATEXTENSIBLE channel mask. */
+		free (psf->channel_map) ;
+
+		if ((psf->channel_map = calloc (psf->sf.channels, sizeof (psf->channel_map [0]))) == NULL)
+			return SFE_MALLOC_FAILED ;
+
+		wavlike_channel_mask_to_map (psf->channel_map, psf->sf.channels, channel_bitmap) ;
+		}
+	else if (map_info && map_info->channel_map != NULL)
 	{	/* The channel map buffer must hold psf->sf.channels entries, because that
 		** is how many SFC_GET_CHANNEL_MAP_INFO and the channel-layout matcher read
 		** back. The layout tag may describe fewer channels than the file declares,
