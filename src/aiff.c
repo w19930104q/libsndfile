@@ -1529,7 +1529,16 @@ aiff_write_tailer (SF_PRIVATE *psf)
 	/* Make sure tailer data starts at even byte offset. Pad if necessary. */
 	if (psf->dataend % 2 == 1)
 	{	psf_fwrite (psf->header.ptr, 1, 1, psf) ;
-		psf->dataend ++ ;
+		/* The pad byte is not part of the SSND audio data. When a frame is
+		** a single byte (8 bit mono), counting the pad in dataend inflates
+		** datalength and hence the frame count when the header is rewritten,
+		** so keep dataend pointing at the end of the audio data. For wider
+		** frames the pad is absorbed by the integer division in the frame
+		** count calculation ; retain the historical behaviour there so
+		** existing 16/24/32 bit output stays byte-identical.
+		*/
+		if (psf->bytewidth * psf->sf.channels > 1)
+			psf->dataend ++ ;
 		} ;
 
 	if (psf->peak_info != NULL && psf->peak_info->peak_loc == SF_PEAK_END)
